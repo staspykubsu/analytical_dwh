@@ -1,0 +1,110 @@
+version: '3.8'
+
+services:
+  # 1. Postgres - источник онлайн школы
+  source-postgres:
+    image: postgres:15
+    container_name: school-source-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: online_school
+      POSTGRES_USER: school_user
+      POSTGRES_PASSWORD: school_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - source_postgres_data:/var/lib/postgresql/data
+    networks:
+      - data-warehouse-network
+
+  # 2. S3 - staging
+  minio:
+    image: minio/minio
+    container_name: staging-s3
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - data-warehouse-network
+    
+  # 3. Clickhouse
+  clickhouse:
+    image: clickhouse/clickhouse-server:23.8
+    container_name: clickhouse-dwh
+    restart: unless-stopped
+    ports:
+      - "8123:8123"  # HTTP interface
+      - "9002:9000"  # Native protocol
+    environment:
+      - CLICKHOUSE_DB=school_dwh
+      - CLICKHOUSE_USER=admin
+      - CLICKHOUSE_PASSWORD=clickhouse_password
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    networks:
+      - data-warehouse-network
+
+  metabase-postgres:
+    image: postgres:15-alpine
+    container_name: metabase-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: metabase
+      POSTGRES_USER: metabase_user
+      POSTGRES_PASSWORD: metabase_password
+    volumes:
+      - metabase_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U metabase_user -d metabase"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - data-warehouse-network
+
+  # 4. Metabase - BI инструмент
+  metabase:
+    image: metabase/metabase
+    container_name: metabase-bi
+    restart: unless-stopped
+    ports:
+    - "3000:3000"
+    environment:
+      MB_DB_TYPE: postgres
+      MB_DB_DBNAME: metabase
+      MB_DB_PORT: 5432
+      MB_DB_USER: metabase_user
+      MB_DB_PASS: metabase_password
+      MB_DB_HOST: metabase-postgres
+      MB_JETTY_PORT: 3000
+      MB_PLUGINS_DIR: /plugins
+    # ДОБАВЬТЕ ЭТУ КРИТИЧЕСКУЮ СТРОКУ:
+      MB_LOAD_SAMPLE_DATA: "false"
+    volumes:
+    - ./plugins:/plugins
+    depends_on:
+      metabase-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - data-warehouse-network
+
+volumes:
+  source_postgres_data:
+  clickhouse_data:
+  minio_data:
+  metabase_postgres_data:
+
+networks:
+  data-warehouse-network:
+    driver: bridge
